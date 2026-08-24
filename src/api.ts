@@ -12,8 +12,10 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   getGroups: () => request<{ groups: Group[] }>('/groups'),
-  register: (payload: { fullName: string; registrationNumber: string; academicYear: number; groupId: string }) =>
-    request<{ registration: { groupNumber: number; academicYear: number } }>('/register', {
+  lookupRegistration: (registrationNumber: string) =>
+    request<{ registration: { groupNumber: number; academicYear: number } | null }>(`/registration?registrationNumber=${encodeURIComponent(registrationNumber)}`),
+  register: (payload: { registrationNumber: string; academicYear: number; groupId: string }) =>
+    request<{ registration: { groupNumber: number; academicYear: number; wasChanged: boolean; alreadyRegistered: boolean } }>('/register', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),

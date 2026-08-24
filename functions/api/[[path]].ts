@@ -64,31 +64,40 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
     if (method === 'POST' && path === '/register') {
       const body = await context.request.json() as Record<string, unknown>;
-      const fullName = safeText(body.fullName, 120);
       const registrationNumber = safeText(body.registrationNumber, 20);
       const academicYear = Number(body.academicYear);
       const groupId = safeText(body.groupId, 50);
-      if (fullName.length < 3 || !/^\d{3,20}$/.test(registrationNumber) || ![1,2,3,4,5].includes(academicYear) || !/^[0-9a-f-]{36}$/i.test(groupId)) {
-        return json({ error: 'راجع البيانات المدخلة وحاول مرة أخرى.' }, 400);
+      if (!/^\d{3,20}$/.test(registrationNumber) || ![1,2,3,4,5].includes(academicYear) || !/^[0-9a-f-]{36}$/i.test(groupId)) {
+        return json({ error: 'Please check your registration number, year and group.' }, 400);
       }
       const response = await supabase(context, '/rest/v1/rpc/register_student', {
         method: 'POST',
         headers: { Prefer: 'return=representation' },
-        body: JSON.stringify({ p_full_name: fullName, p_registration_number: registrationNumber, p_academic_year: academicYear, p_group_id: groupId }),
+        body: JSON.stringify({ p_full_name: 'Student', p_registration_number: registrationNumber, p_academic_year: academicYear, p_group_id: groupId }),
       });
       const result = await response.json() as { message?: string; group_number?: number; academic_year?: number };
       if (!response.ok) {
         const errors: Record<string, string> = {
-          REGISTRATION_EXISTS: 'رقم التسجيل ده سجّل بالفعل في مجموعة قبل كده.',
-          GROUP_FULL: 'للأسف آخر مكان في الجروب اتحجز حالًا. اختر جروبًا آخر.',
-          GROUP_CLOSED: 'التسجيل في الجروب ده اتقفل.',
-          GROUP_NOT_FOUND: 'الجروب غير موجود أو لا يتبع السنة المختارة.',
+          REGISTRATION_EXISTS: 'This registration number has already selected a group.',
+          GROUP_FULL: 'That group has just filled. Please choose another available group.',
+          GROUP_CLOSED: 'Registration for this group is closed.',
+          GROUP_NOT_FOUND: 'This group is unavailable. Please choose another one.',
         };
         return json({ error: errors[result.message || ''] || 'تعذر تأكيد التسجيل. حاول مرة أخرى.' }, response.status === 409 ? 409 : 400);
       }
       const cacheKey = new Request(new URL('/api/groups', context.request.url).toString(), { method: 'GET' });
       context.waitUntil(caches.default.delete(cacheKey));
-      return json({ registration: { groupNumber: result.group_number, academicYear: result.academic_year } }, 201);
+      return json({ registration: { groupNumber: result.group_number, academicYear: result.academic_year, wasChanged: Boolean((result as Record<string, unknown>).was_changed), alreadyRegistered: Boolean((result as Record<string, unknown>).already_registered) } }, 201);
+    }
+
+    if (method === 'GET' && path === '/registration') {
+      const registrationNumber = safeText(url.searchParams.get('registrationNumber'), 20);
+      if (!/^\d{3,20}$/.test(registrationNumber)) return json({ registration: null });
+      const response = await supabase(context, `/rest/v1/registration_details?registration_number=eq.${encodeURIComponent(registrationNumber)}&select=group_number,academic_year&limit=1`);
+      if (!response.ok) throw new Error('SUPABASE_REGISTRATION');
+      const results = await response.json() as Array<{ group_number: number; academic_year: number }>;
+      const registration = results[0];
+      return json({ registration: registration ? { groupNumber: registration.group_number, academicYear: registration.academic_year } : null });
     }
 
     if (method === 'POST' && path === '/admin/login') {
@@ -116,10 +125,10 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       ]);
       if (!groupsResponse.ok || !registrationsResponse.ok) throw new Error('SUPABASE_DASHBOARD');
       const groups = await groupsResponse.json() as Array<Record<string, unknown>>;
-      let registrations = await registrationsResponse.json() as Array<{ full_name: string; registration_number: string; academic_year: number }>;
+      let registrations = await registrationsResponse.json() as Array<{ full_name?: string | null; registration_number: string; academic_year: number }>;
       const search = safeText(url.searchParams.get('search'), 80).toLocaleLowerCase('ar');
       const year = Number(url.searchParams.get('year'));
-      if (search) registrations = registrations.filter((item) => item.full_name.toLocaleLowerCase('ar').includes(search) || item.registration_number.includes(search));
+      if (search) registrations = registrations.filter((item) => (item.full_name || '').toLocaleLowerCase('ar').includes(search) || item.registration_number.includes(search));
       if ([1,2,3,4,5].includes(year)) registrations = registrations.filter((item) => item.academic_year === year);
       const totalRegistrations = groups.reduce((total, group) => total + Number(group.registered_count || 0), 0);
       return json({ groups, registrations, totalRegistrations });
