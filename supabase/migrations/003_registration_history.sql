@@ -27,8 +27,8 @@ revoke all on public.registration_history_details from anon, authenticated;
 create or replace view public.registration_details
 with (security_invoker = true)
 as
-select r.id, r.full_name, r.registration_number, r.academic_year, r.group_id,
-       g.group_number, r.created_at
+select r.id, r.full_name, r.registration_number, r.academic_year,
+       g.group_number, r.created_at, r.group_id
 from public.registrations r
 join public.groups g on g.id = r.group_id;
 
