@@ -1,5 +1,10 @@
 {
   "version": 1,
-  "include": ["/api", "/api/*"],
+  "include": [
+    "/api",
+    "/api/*",
+    "/loaderio-registration-payload.json",
+    "/loaderio-eb224dd43637f14ed280c60ce0337281.txt"
+  ],
   "exclude": []
 }

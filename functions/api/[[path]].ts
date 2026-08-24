@@ -8,7 +8,14 @@ type PagesContext = EventContext<Env, any, Record<string, unknown>>;
 
 const json = (data: unknown, status = 200, cacheControl = 'no-store') => new Response(JSON.stringify(data), {
   status,
-  headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': cacheControl },
+  headers: {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': cacheControl,
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+  },
 });
 
 const routes = [
@@ -19,11 +26,25 @@ const routes = [
   { method: 'POST', path: '/api/register', description: 'Create or change a group registration' },
   { method: 'POST', path: '/api/admin/login', description: 'Create an admin session' },
   { method: 'GET', path: '/api/admin/dashboard', description: 'Load the admin dashboard (Bearer token required)' },
+  { method: 'POST', path: '/api/admin/years/{year}/availability', description: 'Open or close every group in an academic year (Bearer token required)' },
   { method: 'GET', path: '/api/admin/groups/{groupId}', description: 'Load group details (Bearer token required)' },
 ] as const;
 
 function safeText(value: unknown, max = 160) {
   return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, max) : '';
+}
+
+async function readJson(context: PagesContext): Promise<Record<string, unknown> | null> {
+  try {
+    const body = await context.request.json();
+    return body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function audit(event: string, detail: Record<string, unknown> = {}) {
+  console.log(JSON.stringify({ event, ...detail }));
 }
 
 async function supabase(context: PagesContext, path: string, init: RequestInit = {}, service = true) {
@@ -90,13 +111,18 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     }
 
     if (method === 'POST' && path === '/register') {
-      const body = await context.request.json() as Record<string, unknown>;
+      const body = await readJson(context);
+      if (!body) return json({ error: 'Request body must be valid JSON.' }, 400);
       const registrationNumber = safeText(body.registrationNumber, 20);
       const academicYear = Number(body.academicYear);
       const groupId = safeText(body.groupId, 50);
       if (!/^\d{3,20}$/.test(registrationNumber) || ![1,2,3,4,5].includes(academicYear) || !/^[0-9a-f-]{36}$/i.test(groupId)) {
         return json({ error: 'Please check your registration number, year and group.' }, 400);
       }
+      const existingResponse = await supabase(context, `/rest/v1/registrations?registration_number=eq.${encodeURIComponent(registrationNumber)}&select=id&limit=1`);
+      if (!existingResponse.ok) throw new Error('SUPABASE_REGISTRATION_CHECK');
+      const existing = await existingResponse.json() as Array<{ id: string }>;
+      if (existing.length) return json({ error: 'This registration number has already selected a group. Registrations cannot be changed.' }, 409);
       const response = await supabase(context, '/rest/v1/rpc/register_student', {
         method: 'POST',
         headers: { Prefer: 'return=representation' },
@@ -114,6 +140,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       }
       const cacheKey = new Request(new URL('/api/groups', context.request.url).toString(), { method: 'GET' });
       context.waitUntil(caches.default.delete(cacheKey));
+      audit('registration_created', { academicYear });
       return json({ registration: { groupNumber: result.group_number, academicYear: result.academic_year, wasChanged: Boolean((result as Record<string, unknown>).was_changed), alreadyRegistered: Boolean((result as Record<string, unknown>).already_registered) } }, 201);
     }
 
@@ -128,7 +155,8 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     }
 
     if (method === 'POST' && path === '/admin/login') {
-      const body = await context.request.json() as Record<string, unknown>;
+      const body = await readJson(context);
+      if (!body) return json({ error: 'Request body must be valid JSON.' }, 400);
       const email = safeText(body.email, 200);
       const password = typeof body.password === 'string' ? body.password : '';
       const auth = await fetch(`${context.env.SUPABASE_URL}/auth/v1/token?grant_type=password`, {
@@ -136,11 +164,12 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         headers: { apikey: context.env.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
-      if (!auth.ok) return json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' }, 401);
+      if (!auth.ok) { audit('admin_login_failed'); return json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' }, 401); }
       const session = await auth.json() as { access_token: string; refresh_token: string; user: { id: string } };
       const adminCheck = await supabase(context, `/rest/v1/admins?user_id=eq.${encodeURIComponent(session.user.id)}&select=user_id&limit=1`);
       const admins = adminCheck.ok ? await adminCheck.json() as Array<unknown> : [];
-      if (!admins.length) return json({ error: 'هذا الحساب لا يملك صلاحية الإدارة.' }, 403);
+      if (!admins.length) { audit('admin_login_denied'); return json({ error: 'هذا الحساب لا يملك صلاحية الإدارة.' }, 403); }
+      audit('admin_login_succeeded');
       return json({ accessToken: session.access_token, refreshToken: session.refresh_token });
     }
 
@@ -161,6 +190,25 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       return json({ groups, registrations, totalRegistrations });
     }
 
+    const yearAvailabilityMatch = path.match(/^\/admin\/years\/([1-5])\/availability$/);
+    if (method === 'POST' && yearAvailabilityMatch) {
+      if (!await requireAdmin(context)) return json({ error: 'انتهت الجلسة، سجل دخولك مرة أخرى.' }, 401);
+      const body = await readJson(context);
+      if (!body) return json({ error: 'Request body must be valid JSON.' }, 400);
+      if (typeof body.isOpen !== 'boolean') return json({ error: 'Choose whether the year should be open or closed.' }, 400);
+      const academicYear = yearAvailabilityMatch[1];
+      const response = await supabase(context, `/rest/v1/groups?academic_year=eq.${academicYear}`, {
+        method: 'PATCH',
+        headers: { Prefer: 'return=representation' },
+        body: JSON.stringify({ is_open: body.isOpen }),
+      });
+      if (!response.ok) throw new Error('SUPABASE_YEAR_AVAILABILITY');
+      const cacheKey = new Request(new URL('/api/groups', context.request.url).toString(), { method: 'GET' });
+      context.waitUntil(caches.default.delete(cacheKey));
+      audit('year_availability_changed', { academicYear, isOpen: body.isOpen });
+      return json({ groups: await response.json() });
+    }
+
     const groupDetailsMatch = path.match(/^\/admin\/groups\/([0-9a-f-]{36})$/i);
     if (method === 'GET' && groupDetailsMatch) {
       if (!await requireAdmin(context)) return json({ error: 'Your session has ended. Please sign in again.' }, 401);
@@ -178,7 +226,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
     return json({ error: 'المسار غير موجود.' }, 404);
   } catch (error) {
-    console.error('API error', error instanceof Error ? error.message : error);
+    console.error(JSON.stringify({ event: 'api_error', path, method, message: error instanceof Error ? error.message : 'unknown' }));
     return json({ error: 'الخدمة غير متاحة مؤقتًا. حاول مرة أخرى بعد قليل.' }, 500);
   }
 };

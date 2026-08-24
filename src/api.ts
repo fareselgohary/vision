@@ -32,4 +32,10 @@ export const api = {
     request<GroupDetails>(`/admin/groups/${encodeURIComponent(groupId)}`, {
       headers: { Authorization: `Bearer ${token}` },
     }),
+  setYearAvailability: (token: string, academicYear: number, isOpen: boolean) =>
+    request<{ groups: Group[] }>(`/admin/years/${academicYear}/availability`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ isOpen }),
+    }),
 };
