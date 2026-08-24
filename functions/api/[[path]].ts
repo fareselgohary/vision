@@ -19,15 +19,13 @@ async function supabase(context: PagesContext, path: string, init: RequestInit =
   const key = service ? context.env.SUPABASE_SERVICE_ROLE_KEY : context.env.SUPABASE_ANON_KEY;
   // Supabase now issues `sb_secret_...` server keys as well as legacy JWT service-role keys.
   // Secret keys select the service role through `apikey`; they must not be sent as a Bearer JWT.
-  const authorization = key.startsWith('sb_secret_') ? {} : { Authorization: `Bearer ${key}` };
+  const headers = new Headers(init.headers);
+  headers.set('apikey', key);
+  headers.set('Content-Type', 'application/json');
+  if (!key.startsWith('sb_secret_')) headers.set('Authorization', `Bearer ${key}`);
   return fetch(`${context.env.SUPABASE_URL}${path}`, {
     ...init,
-    headers: {
-      apikey: key,
-      ...authorization,
-      'Content-Type': 'application/json',
-      ...init.headers,
-    },
+    headers,
   });
 }
 
