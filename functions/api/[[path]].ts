@@ -11,6 +11,17 @@ const json = (data: unknown, status = 200, cacheControl = 'no-store') => new Res
   headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': cacheControl },
 });
 
+const routes = [
+  { method: 'GET', path: '/api', description: 'API index and route list' },
+  { method: 'GET', path: '/api/health', description: 'Lightweight service health check' },
+  { method: 'GET', path: '/api/groups', description: 'List group availability' },
+  { method: 'GET', path: '/api/registration?registrationNumber={number}', description: 'Look up a registration' },
+  { method: 'POST', path: '/api/register', description: 'Create or change a group registration' },
+  { method: 'POST', path: '/api/admin/login', description: 'Create an admin session' },
+  { method: 'GET', path: '/api/admin/dashboard', description: 'Load the admin dashboard (Bearer token required)' },
+  { method: 'GET', path: '/api/admin/groups/{groupId}', description: 'Load group details (Bearer token required)' },
+] as const;
+
 function safeText(value: unknown, max = 160) {
   return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, max) : '';
 }
@@ -51,6 +62,22 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   const method = context.request.method;
 
   try {
+    if (method === 'GET' && (path === '' || path === '/')) {
+      return json({
+        service: 'The Vision API',
+        status: 'ok',
+        routes,
+      }, 200, 'public, max-age=300');
+    }
+
+    if (method === 'GET' && path === '/health') {
+      return json({
+        status: 'ok',
+        service: 'the-vision-api',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     if (method === 'GET' && path === '/groups') {
       const cacheKey = new Request(new URL('/api/groups', context.request.url).toString(), { method: 'GET' });
       const cached = await caches.default.match(cacheKey);
