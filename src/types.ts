@@ -23,3 +23,16 @@ export type DashboardData = {
   totalRegistrations: number;
   registrations: Registration[];
 };
+
+export type GroupDetails = {
+  group: Group;
+  students: Registration[];
+  history: Array<{
+    id: string;
+    registration_number: string;
+    event_type: 'registered' | 'moved';
+    from_group_number: number | null;
+    to_group_number: number;
+    created_at: string;
+  }>;
+};

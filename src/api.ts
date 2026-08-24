@@ -1,4 +1,4 @@
-import type { DashboardData, Group } from './types';
+import type { DashboardData, Group, GroupDetails } from './types';
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -26,6 +26,10 @@ export const api = {
     }),
   dashboard: (token: string, search = '', year = '') =>
     request<DashboardData>(`/admin/dashboard?search=${encodeURIComponent(search)}&year=${year}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+  groupDetails: (token: string, groupId: string) =>
+    request<GroupDetails>(`/admin/groups/${encodeURIComponent(groupId)}`, {
       headers: { Authorization: `Bearer ${token}` },
     }),
 };

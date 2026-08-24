@@ -134,6 +134,21 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       return json({ groups, registrations, totalRegistrations });
     }
 
+    const groupDetailsMatch = path.match(/^\/admin\/groups\/([0-9a-f-]{36})$/i);
+    if (method === 'GET' && groupDetailsMatch) {
+      if (!await requireAdmin(context)) return json({ error: 'Your session has ended. Please sign in again.' }, 401);
+      const groupId = groupDetailsMatch[1];
+      const [groupResponse, studentsResponse, historyResponse] = await Promise.all([
+        supabase(context, `/rest/v1/group_availability?id=eq.${encodeURIComponent(groupId)}&select=*&limit=1`),
+        supabase(context, `/rest/v1/registration_details?group_id=eq.${encodeURIComponent(groupId)}&select=*&order=created_at.desc`),
+        supabase(context, `/rest/v1/registration_history_details?or=(from_group_id.eq.${encodeURIComponent(groupId)},to_group_id.eq.${encodeURIComponent(groupId)})&select=*&order=created_at.desc&limit=200`),
+      ]);
+      if (!groupResponse.ok || !studentsResponse.ok || !historyResponse.ok) throw new Error('SUPABASE_GROUP_DETAILS');
+      const groups = await groupResponse.json() as Array<Record<string, unknown>>;
+      if (!groups[0]) return json({ error: 'Group not found.' }, 404);
+      return json({ group: groups[0], students: await studentsResponse.json(), history: await historyResponse.json() });
+    }
+
     return json({ error: 'المسار غير موجود.' }, 404);
   } catch (error) {
     console.error('API error', error instanceof Error ? error.message : error);
