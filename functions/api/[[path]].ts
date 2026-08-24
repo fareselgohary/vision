@@ -28,6 +28,8 @@ const routes = [
   { method: 'GET', path: '/api/admin/dashboard', description: 'Load the admin dashboard (Bearer token required)' },
   { method: 'POST', path: '/api/admin/years/{year}/availability', description: 'Open or close every group in an academic year (Bearer token required)' },
   { method: 'GET', path: '/api/admin/groups/{groupId}', description: 'Load group details (Bearer token required)' },
+  { method: 'PATCH', path: '/api/admin/registrations/{number}', description: 'Move a student to a group (Bearer token required)' },
+  { method: 'DELETE', path: '/api/admin/registrations/{number}', description: 'Delete a student registration (Bearer token required)' },
 ] as const;
 
 function safeText(value: unknown, max = 160) {
@@ -207,6 +209,51 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       context.waitUntil(caches.default.delete(cacheKey));
       audit('year_availability_changed', { academicYear, isOpen: body.isOpen });
       return json({ groups: await response.json() });
+    }
+
+    const adminRegistrationMatch = path.match(/^\/admin\/registrations\/(\d{3,20})$/);
+    if (adminRegistrationMatch && (method === 'PATCH' || method === 'DELETE')) {
+      if (!await requireAdmin(context)) return json({ error: 'انتهت الجلسة، سجل دخولك مرة أخرى.' }, 401);
+      const registrationNumber = adminRegistrationMatch[1];
+      const cacheKey = new Request(new URL('/api/groups', context.request.url).toString(), { method: 'GET' });
+
+      if (method === 'DELETE') {
+        const registrationResponse = await supabase(context, `/rest/v1/registrations?registration_number=eq.${encodeURIComponent(registrationNumber)}&select=id&limit=1`);
+        if (!registrationResponse.ok) throw new Error('SUPABASE_DELETE_LOOKUP');
+        const registrations = await registrationResponse.json() as Array<{ id: string }>;
+        if (!registrations.length) return json({ error: 'Registration not found.' }, 404);
+        const historyResponse = await supabase(context, `/rest/v1/registration_history?registration_number=eq.${encodeURIComponent(registrationNumber)}`, { method: 'DELETE' });
+        const deleteResponse = await supabase(context, `/rest/v1/registrations?registration_number=eq.${encodeURIComponent(registrationNumber)}`, { method: 'DELETE' });
+        if (!historyResponse.ok || !deleteResponse.ok) throw new Error('SUPABASE_REGISTRATION_DELETE');
+        context.waitUntil(caches.default.delete(cacheKey));
+        audit('admin_registration_deleted');
+        return json({ deleted: true });
+      }
+
+      const body = await readJson(context);
+      const academicYear = Number(body?.academicYear);
+      const groupId = safeText(body?.groupId, 50);
+      if (!body || ![1, 2, 3, 4, 5].includes(academicYear) || !/^[0-9a-f-]{36}$/i.test(groupId)) {
+        return json({ error: 'Choose a valid target group.' }, 400);
+      }
+      let response = await supabase(context, '/rest/v1/rpc/admin_move_registration', {
+        method: 'POST',
+        body: JSON.stringify({ p_registration_number: registrationNumber, p_academic_year: academicYear, p_group_id: groupId }),
+      });
+      // Backwards-compatible fallback until the SQL migration is applied. This route
+      // is still protected by requireAdmin; the existing RPC keeps the move atomic.
+      if (response.status === 404) response = await supabase(context, '/rest/v1/rpc/register_student', {
+        method: 'POST',
+        body: JSON.stringify({ p_full_name: 'Student', p_registration_number: registrationNumber, p_academic_year: academicYear, p_group_id: groupId }),
+      });
+      const result = await response.json() as { message?: string; group_number?: number; academic_year?: number };
+      if (!response.ok) {
+        const errors: Record<string, string> = { REGISTRATION_NOT_FOUND: 'Registration not found.', GROUP_FULL: 'That group is already full.', GROUP_NOT_FOUND: 'Target group was not found.' };
+        return json({ error: errors[result.message || ''] || 'Could not move this student.' }, 400);
+      }
+      context.waitUntil(caches.default.delete(cacheKey));
+      audit('admin_registration_moved', { academicYear });
+      return json({ registration: { groupNumber: result.group_number, academicYear: result.academic_year } });
     }
 
     const groupDetailsMatch = path.match(/^\/admin\/groups\/([0-9a-f-]{36})$/i);

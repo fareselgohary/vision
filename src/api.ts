@@ -38,4 +38,15 @@ export const api = {
       headers: { Authorization: `Bearer ${token}` },
       body: JSON.stringify({ isOpen }),
     }),
+  moveRegistration: (token: string, registrationNumber: string, payload: { academicYear: number; groupId: string }) =>
+    request<{ registration: { groupNumber: number; academicYear: number } }>(`/admin/registrations/${encodeURIComponent(registrationNumber)}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    }),
+  deleteRegistration: (token: string, registrationNumber: string) =>
+    request<{ deleted: true }>(`/admin/registrations/${encodeURIComponent(registrationNumber)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }),
 };
